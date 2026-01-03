@@ -1,95 +1,248 @@
 # Engineering Knowledge Graph (EKG)
 
-A unified graph system that ingests infrastructure definitions (`docker-compose.yml`, `k8s-deployments.yaml`, `teams.yaml`) and provides a Natural Language Interface to answer engineering questions like "What breaks if redis goes down?".
+An Engineering Knowledge Graph (EKG) that ingests infrastructure configuration files and unifies them into a queryable graph.  
+The system exposes a natural language interface that allows engineers to ask operational questions such as:
 
-##  Quick Start
+- Who owns the payment service?
+- What breaks if Redis goes down?
+- How does the API Gateway connect to the orders database?
+
+This project demonstrates how graph databases and LLMs can be combined to reason over complex engineering systems.
+
+---
+
+<img width="3199" height="4437" alt="immmmj" src="https://github.com/user-attachments/assets/741cb44f-8060-41f5-9d0a-6e3bd66e2f6f" />
+
+
+## Key Features
+
+- Pluggable ingestion from infrastructure configuration files
+- Unified graph model for services, databases, caches, and teams
+- Deterministic graph queries for dependencies and blast radius
+- LLM-powered natural language interface (intent routing only)
+- One-command startup using Docker Compose
+
+---
+
+## Quick Start
 
 ### Prerequisites
 - Docker & Docker Compose
-- Groq API Key
+- Groq API key
 
-### Setup
-1. **Set API Key**:
-   Create a `.env` file in the root or export the variable:
-   ```bash
-   export GROQ_API_KEY=gsk_...
-   ```
-   *(Or edit `docker-compose.yml` to include it directly)*
+---
 
-2. **Start System**:
-   ```bash
-   docker-compose up --build
-   ```
-   This will:
-   - Start Neo4j (Graph Database)
-   - Start the Streamlit App
-   - Wait for Neo4j to be ready
+### 1. Configure Environment Variables
 
-3. **Access UI**:
-   Open [http://localhost:8501](http://localhost:8501)
+Create a `.env` file in the project root:
 
-4. **Ingest Data**:
-   The app will auto-detect an empty graph and run ingestion. You can also click "Re-Ingest Data" in the sidebar.
-
-## 🏗️ Architecture
-
-```mermaid
-graph TD
-    Configs[Config Files] --> Connectors[Connectors]
-    Connectors --> Storage[Graph Storage (Neo4j)]
-    User[User] --> UI[Streamlit UI]
-    UI --> Router[Chat Router (LLM)]
-    Router --> Query[Query Engine]
-    Query --> Storage
-    Query --> UI
+```yaml
+GROQ_API_KEY=your_api_key_here
 ```
 
-### Components
-- **Connectors**: Pluggable modules (`docker_compose.py`, `teams.py`) that parse raw files into Nodes/Edges.
-- **Graph Storage**: Neo4j database storing the unified graph.
-- **Query Engine**: Deterministic Python execution of Cypher queries (Blast Radius, Pathfinding).
-- **Chat Router**: LLM (GPT-4) classifies natural language into structured JSON intent (e.g., `blast_radius(node_id="redis")`).
-- **UI**: Streamlit interface for chat and visualization.
+Connect to Remote Neo4j (e.g., AuraDB)**
 
-## ❓ Design Decisions
+```yaml
+NEO4J_URI=neo4j+s://<your-instance-id>.databases.neo4j.io
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=<your-password>
+```
 
-**1. Connector Pluggability**
-Connectors inherit from `BaseConnector` and return a standard list of Nodes/Edges. Adding Terraform support just requires implementing `TerraformConnector(BaseConnector)` and adding it to the `ingest_data.py` script.
+---
 
-**2. Graph Updates**
-The `Re-Ingest` button currently clears and rebuilds the graph (Idempotent Upsert is also supported but full refresh is safer for prototype). For production, we would use file watchers (Watchdog) to trigger incremental upserts via the implemented `upsert_node` methods.
+### 2. Database Setup
 
-**3. Cycle Handling**
-Dependencies can be cyclic. We use Neo4j's `shortestPath` which handles cycles naturally, and our custom `blast_radius` Cypher query uses distinct node collection (`MATCH (n)-[*]->(m)`) which avoids infinite loops by visiting nodes once.
+**Option A: Local Docker Instance (Default)**
+The system automatically starts a local Neo4j container.
+- **URL**: `bolt://localhost:7687`
+- **User**: `neo4j`
+- **Password**: `password` (Set in `docker-compose.yml`)
+- **Action**: Just run `docker-compose up`, no extra setup needed.
 
-**4. Query Mapping**
-We use a "Tool Calling" approach. The LLM does **not** query the graph directly (to avoid hallucination and syntax errors). It outputs a JSON intent that maps to a specific Python function in `QueryEngine`.
+**Option B: Neo4j AuraDB (Cloud)**
+1. Create a free account at [Neo4j Aura](https://neo4j.com/cloud/aura/).
+2. Create an instance and copy the credentials.
+3. Update your `.env` file (as shown above).
+4. Run the ingestion script locally to populate the cloud DB:
+   ```bash
+   # Windows
+   $env:PYTHONPATH="."; python scripts/ingest_data.py
+   
+   # Linux/Mac
+   PYTHONPATH=. python scripts/ingest_data.py
+   ```
 
-**5. Failure Handling**
-If the LLM can't determine intent, it asks for clarification. If the Graph returns empty, we show "No data found". The UI handles connection errors to Neo4j gracefully with status indicators.
+---
 
-**6. Scale Considerations (10K Nodes)**
-Neo4j handles millions of nodes easily. The bottleneck would be the python `networkx` in-memory processing if we used it, but we delegated heavy lifting to Cypher. Visualization in the UI would need pagination for 10K nodes.
+### 3. Start the System
 
-**7. Why Neo4j?**
-Chosen for its native graph traversals (`[*..5]`), visual browser, and enforcing constraints. SQL recursive CTEs are painful for variable-depth "blast radius" queries.
+```bash
+docker-compose up --build
+```
 
-## ⚖️ Tradeoffs & Limitations
+This will:
+- Start Neo4j (graph database)
+- Start the Streamlit application
+- Wait for Neo4j to become healthy before launching the app
 
-1. **Security**: API Keys are passed via environment variables, but for production, we should use a dedicated Secrets Manager (Vault, AWS Secrets Manager). The UI has no authentication.
-2. **Persistence**: We assume `docker-compose.yml` is the source of truth. Real-world systems drift. A production version would query the live Kubernetes API or AWS API directly rather than static files.
-3. **Scale**: The current "Blast Radius" implementation fetches all downstream nodes. For a graph with millions of nodes, we would need to limit depth (e.g., `[*..5]`) and implement pagination.
-4. **LLM Dependency**: The system relies on the LLM to route intent. If the LLM is down or hallucinating, the query fails. We mitigated this with strict schema enforcement but a fallback keyword search would be a good addition.
+---
 
-## 🛠️ Tech Stack
-- **Language**: Python 3.11
-- **Database**: Neo4j 5.15
-- **UI**: Streamlit
-- **LLM**: Groq (Llama 3.3 70B)
+### 3. Access the UI
 
-## 📂 Directory Structure
-- `connectors/`: Parsing logic
-- `graph/`: Database interaction
-- `chat/`: LLM Logic
-- `ui/`: Frontend
-- `data/`: Sample configs
+Open your browser at:
+http://localhost:8501
+
+---
+
+### 4. Data Ingestion
+
+- On first startup, the app detects an empty graph and automatically ingests data
+- You can manually re-ingest data using the "Re-Ingest Data" button in the sidebar
+
+---
+
+## Architecture Overview
+
+**Raw Config Files**
+- `docker-compose.yml`
+- `teams.yaml`
+- `k8s-deployments.yaml` (optional)
+
+**Connectors Layer**
+- `DockerComposeConnector`
+- `TeamsConnector`
+- `KubernetesConnector` (optional)
+
+**Graph Storage Layer**
+- `Neo4j` (MERGE / upsert semantics)
+
+**Logic Layer**
+- `Query Engine` (deterministic graph traversal)
+- `LLM Router` (intent classification only)
+
+**UI Layer**
+- `Streamlit` Chat Interface
+
+---
+
+## Core Components
+
+### Connectors
+Pluggable modules that parse raw configuration files and emit graph nodes and relationships.  
+Each connector implements a shared `BaseConnector` interface and returns a standardized list of nodes and edges.
+
+---
+
+### Graph Storage
+Neo4j stores the unified graph. Nodes represent services, databases, caches, and teams.  
+Edges represent relationships such as `DEPENDS_ON`, `CALLS`, `USES`, and `OWNED_BY`.  
+All writes use idempotent `MERGE` operations.
+
+---
+
+### Query Engine
+A deterministic Python layer that executes Cypher queries for:
+- Ownership lookup
+- Upstream and downstream dependencies
+- Blast radius analysis
+- Shortest path between components
+
+---
+
+### LLM Router
+Uses Groq (Llama 3.3 70B) to convert natural language into structured JSON intents.  
+The LLM never queries Neo4j directly and cannot fabricate data.
+
+---
+
+### UI
+A Streamlit-based chat interface that:
+- Accepts natural language questions
+- Displays structured results and summaries
+- Handles database and ingestion errors gracefully
+
+---
+
+## Design Decisions
+
+### Connector Pluggability
+New data sources can be added by implementing the `BaseConnector` interface and registering the connector in the ingestion pipeline.
+
+---
+
+### Graph Updates
+The graph is cleared and rebuilt during re-ingestion for correctness and simplicity.  
+A production version could use incremental updates triggered by file watchers or APIs.
+
+---
+
+### Cycle Handling
+Dependency cycles are handled safely using Neo4j variable-length traversals and distinct node collection, preventing infinite loops.
+
+---
+
+### Natural Language to Query Mapping
+The LLM outputs a constrained JSON intent schema that maps directly to deterministic query functions, preventing hallucination.
+
+---
+
+### Failure Handling
+- Unknown intents return a safe fallback response
+- Empty graph results are explicitly reported
+- Neo4j connection issues are surfaced in the UI
+
+---
+
+### Scale Considerations
+At large scale, unbounded traversals and large result sets would be bottlenecks.  
+Depth limits, pagination, caching, and incremental ingestion would be required.
+
+---
+
+### Why Neo4j
+Neo4j was chosen for its native graph traversal capabilities, expressive Cypher queries, and suitability for dependency-driven systems.
+
+---
+
+## Tradeoffs and Limitations
+
+- Static configuration files are treated as the source of truth
+- No authentication or access control in the UI
+- Full graph rebuilds instead of incremental diffs
+- Dependency on LLM availability for intent routing
+
+---
+
+## Tech Stack
+
+- Python 3.11
+- Neo4j 5.15
+- Streamlit
+- Groq (Llama 3.3 70B)
+- Docker & Docker Compose
+
+---
+
+## Directory Structure
+
+- `connectors/`   - Ingestion logic
+- `graph/`        - Neo4j storage and queries
+- `chat/`         - LLM routing and context
+- `ui/`           - Streamlit application
+- `scripts/`      - Ingestion and validation utilities
+- `data/`         - Sample configuration files
+
+---
+
+## AI Usage
+
+AI was used to accelerate development, generate scaffolding, and explore design options.  
+All AI-generated code and content were reviewed, validated, and corrected manually.
+
+---
+
+## Summary
+
+This project demonstrates how LLMs and graph databases can be combined to create an extensible system for reasoning about engineering infrastructure while maintaining deterministic execution and explainability.
+
+This project demonstrates how LLMs and graph databases can be combined to create an extensible system for reasoning about engineering infrastructure while maintaining deterministic execution and explainability.
